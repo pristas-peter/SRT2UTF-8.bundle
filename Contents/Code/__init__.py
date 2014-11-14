@@ -10,10 +10,8 @@
 # Check for pref. set language
 #
 
-######################################### Global Variables #########################################
-PLUGIN_VERSION = '0.0.1.9'
-
 ######################################### Imports ##################################################
+
 import os
 import shutil
 import io
@@ -28,95 +26,163 @@ import charedSup
 from chared import __version__ as VERSION
 from chared.detector import list_models, get_model_path, EncodingDetector
 
+import traceback
+import urllib2
+import xml.dom.minidom
+import unicodedata 
+
+######################################### Global Variables #########################################
+PLUGIN_VERSION = '0.0.1.20'
+AGENT_TIMEOUT = 3
+API_PORT = 32400
+MEDIA_DIR = os.path.join(Core.app_support_path, 'Media', 'localhost')
+
 
 ######################################## Start of plugin ###########################################
 def Start():
 	Log.Info(L('Starting') + ' %s ' %(L('Srt2Utf-8')) + L('with a version of') + ' %s' %(PLUGIN_VERSION))
-#	print L('Starting') + ' %s ' %(L('Srt2Utf-8')) + L('with a version of') + ' %s' %(PLUGIN_VERSION)
-	
-####################################### Movies Plug-In #############################################
-class srt2utf8AgentMovies(Agent.Movies):
+
+####################################### Movie Plug-In ###########################################
+class MovieAgent(Agent.Movies):
 	name = L('Srt2Utf-8') + ' (Movies)'
 	languages = [Locale.Language.NoLanguage]
 	primary_provider = False
 	contributes_to = ['com.plexapp.agents.imdb', 'com.plexapp.agents.themoviedb', 'com.plexapp.agents.none']
-	# Return a dummy object to satisfy the framework
+
 	def search(self, results, media, lang, manual):
 		results.Append(MetadataSearchResult(id='null', score = 100))
-    	# Handle the object returned to us, so we can find the directory to look in
+
 	def update(self, metadata, media, lang, force):
 		for i in media.items:
 			for part in i.parts:
-				GetFiles(part)
+				Thread.CreateTimer(AGENT_TIMEOUT, handlePart, True, part)
 
 ####################################### TV-Shows Plug-In ###########################################
-class srt2utf8AgentTV(Agent.TV_Shows):
+class TvShowsAgent(Agent.TV_Shows):
 	name = L('Srt2Utf-8') + ' (TV)'
 	languages = [Locale.Language.NoLanguage]
 	primary_provider = False
 	contributes_to = ['com.plexapp.agents.thetvdb', 'com.plexapp.agents.none']
-	# Return a dummy object to satisfy the framework
+
 	def search(self, results, media, lang):
 		results.Append(MetadataSearchResult(id='null', score = 100))
-	# Handle the object returned to us, so we can find the directory to look in
+
 	def update(self, metadata, media, lang, force):
 		for s in media.seasons:
+			# just like in the Local Media Agent, if we have a date-based season skip for now.
 			if int(s) < 1900:
 				for e in media.seasons[s].episodes:
 					for i in media.seasons[s].episodes[e].items:
 						for part in i.parts:
-							GetFiles(part)
+							Thread.CreateTimer(AGENT_TIMEOUT, handlePart, True, part)
 
-######################################### Get files in directory ###################################
-def GetFiles(part):
-	# Filename of media	
-	sFile = part.file.decode('utf-8')
-	# Directory where it's located
-	sMyDir = os.path.dirname(sFile).decode('utf-8')
-	Log.Debug('File trigger is "%s"' %(sFile))
-	for root, dirs, files in os.walk(sMyDir, topdown=False):
-		# Walk the directory
-		for sSrtName in files:
-			# Grap all files, and check if it's a valid subtitle file
-			sSrtName = sSrtName.decode('utf-8')
-			sTest = sIsValid(sMyDir, sFile, sSrtName)
-			if sTest != 'null':
-				# We got a valid subtitle file here
-				if not bIsUTF_8(sTest):
-					# Got a language code in the file-name?
-					sMyLang = sGetFileLang(sTest)			
-					if sMyLang == 'xx':
-						sMyLang = GetUsrEncPref()
-						sMyLang = Locale.Language.Match(sMyLang)					
-					try:
-						# Chared supported
-						sModel = charedSup.CharedSupported[sMyLang]
-						if sModel != 'und':
-							Log.Debug('Chared is supported for this language')
-							sMyEnc = FindEncChared(sTest, sModel)
-					except:
-						Log.Debug('Chared is not supported, reverting to Beautifull Soap')
-						sMyEnc = FindEncBS(sTest, sMyLang)
-					# Convert the darn thing
-					if sMyEnc not in ('utf_8', 'utf-8'):
-						# Make a backup
-						try:
-							MakeBackup(sTest)
-						except:
-							Log.Exception('Something went wrong creating a backup, file will not be converted!!! Check file permissions?')
-						else:
-							try:
-								ConvertFile(sTest, sMyEnc)
-							except:
-								Log.Exception('Something went wrong converting!!! Check file permissions?')
-								try:
-									RevertBackup(sTest)
-								except:
-									Log.Exception("Can't even revert the backup?!? I give up...")
-					else:
-						Log.Debug('The subtitle file named : %s is already encoded in utf-8, so skipping' %(sTest))
-				else:
-					Log.Debug('The subtitle file named : %s is already encoded in utf-8, so skipping' %(sTest))
+def api(cmd):
+	url = 'http://127.0.0.1:{}{}'.format(API_PORT, cmd)
+	Log.Debug('Request: {}'.format(url))
+	data = urllib2.urlopen(url).read()
+	return xml.dom.minidom.parseString(data)
+
+def get_directory(filename, sections):
+	for media_container in sections.getElementsByTagName('MediaContainer'):
+		for directory in media_container.getElementsByTagName('Directory'):
+			for location in directory.getElementsByTagName('Location'):
+				if location.hasAttribute('path'):
+					if unicodedata.normalize('NFC', location.getAttribute('path')) in filename:
+						return directory
+
+def get_video(filename, section):
+	for media_container in section.getElementsByTagName('MediaContainer'):
+		for video in media_container.getElementsByTagName('Video'):
+			for media in video.getElementsByTagName('Media'):
+				for part in media.getElementsByTagName('Part'):
+					if part.hasAttribute('file'):
+						if urllib2.unquote(part.getAttribute('file').encode('unicode-escape')).decode('utf-8') == filename:
+							return video
+
+def get_media_streams(filename, metadata):
+	for media_container in metadata.getElementsByTagName('MediaContainer'):
+		for metadata_item in media_container.getElementsByTagName('MetadataItem'):
+			for media_item in metadata_item.getElementsByTagName('MediaItem'):
+				for media_part in metadata_item.getElementsByTagName('MediaPart'):
+					return media_part.getElementsByTagName('MediaStream')
+
+def get_subtitles(media_streams):
+	subtitles = []
+	for media_stream in media_streams:
+		if media_stream.hasAttribute('type'):
+			if media_stream.getAttribute('type') == '3' and media_stream.hasAttribute('url') and media_stream.hasAttribute('language'):
+				sub_file = os.path.join(MEDIA_DIR, media_stream.getAttribute('url').replace('media://', ''))
+				sub_lang =  media_stream.getAttribute('language')
+
+				subtitles.append((sub_file, sub_lang))
+
+	return subtitles
+
+def handlePart(*args, **kwargs):
+	part = args[0]
+	filename = part.file.decode('utf-8')
+
+	Log.Debug('---------------------------------')
+	Log.Debug('File: {}'.format(filename))	
+
+	try:
+		d = get_directory(filename, api('/library/sections'))
+		if d is None:
+			raise Exception("Could not associate 'Directory' from sections")
+
+		key = d.getAttribute('key')
+		v = get_video(filename, api('/library/sections/{}/allLeaves'.format(key)))
+		if v is None:
+			raise Exception("Could not associate 'Video/Media/Part' in section {}".format(key))
+		
+		key = v.getAttribute('key')
+		m = get_media_streams(filename, api("{}/tree".format(key)))
+		if m is None:
+			raise Exception("Could not find 'Video/Media/Part/Stream' in metadata {}".format(key))
+
+		for sub_filename, sub_lang in get_subtitles(m):
+			Log.Debug('Subtitle: {}'.format(sub_filename))
+			Log.Debug('Subtitle lang: {}'.format(sub_lang))
+
+			if not bIsUTF_8(sub_filename):
+				pass
+				# TODO charedSup.CharedSupported you have 'cs' for czech language, but plex has it stored as 'cze', so you have to update your charedSup.CharedSupported with plex's language short names in api
+
+
+				# try:
+				# 	# Chared supported
+				# 	sModel = charedSup.CharedSupported[sMyLang]
+				# 	if sModel != 'und':
+				# 		Log.Debug('Chared is supported for this language')
+				# 		sMyEnc = FindEncChared(sTest, sModel)
+				# except:
+				# 	Log.Debug('Chared is not supported, reverting to Beautifull Soap')
+				# 	sMyEnc = FindEncBS(sTest, sMyLang)
+				# # Convert the darn thing
+				# if sMyEnc not in ('utf_8', 'utf-8'):
+				# 	# Make a backup
+				# 	try:
+				# 		MakeBackup(sTest)
+				# 	except:
+				# 		Log.Exception('Something went wrong creating a backup, file will not be converted!!! Check file permissions?')
+				# 	else:
+				# 		try:
+				# 			ConvertFile(sTest, sMyEnc)
+				# 		except:
+				# 			Log.Exception('Something went wrong converting!!! Check file permissions?')
+				# 			try:
+				# 				RevertBackup(sTest)
+				# 			except:
+				# 				Log.Exception("Can't even revert the backup?!? I give up...")
+				# else:
+				# 	Log.Debug('The subtitle file named : %s is already encoded in utf-8, so skipping' %(sTest))
+			else:
+				Log.Debug('The subtitle file named : %s is already encoded in utf-8, so skipping' %(sub_filename))
+
+	except:
+		Log.Error('Could not process {}'.format(filename))
+		Log.Error(traceback.format_exc())
+				
 
 ########################################## Convert file to utf-8 ###################################
 def ConvertFile(myFile, enc):
@@ -235,37 +301,6 @@ def bIsUTF_8(sMyFile):
 	except:
 		return False
 
-######################################### Is file valid? ############################################
-# Returns a filename of a valid subtitle file, or 'null' if it's a no-go
-def sIsValid(sMyDir, sMediaFilename, sSubtitleFilename):
-	try:
-		Log.Debug('Checking if file %s is valid' %(sSubtitleFilename))
-		# Valid list of subtitle ext.	
-		lValidList = Prefs['Valid_Ext'].upper().split()
-		# Get the ext of the SubtitleFile
-		sFileName, sFileExtension = os.path.splitext(sSubtitleFilename)
-		# Is this a valid subtitle file?
-		if (sFileExtension.upper() in lValidList):
-			#It's a subtitle file, but is it for the mediafile?
-			# Get filename without ext. of the media
-			myMedia, myMediaExt = os.path.splitext(os.path.basename(sMediaFilename))
-			# Get the ext of the SubtitleFile
-			sSRTName2, sFileExtension = os.path.splitext(sFileName)
-			if sFileName == myMedia:
-				Log.Debug('Found a valid subtitle file named "%s"' %(sSubtitleFilename))
-				sSource = sMyDir + '/' + sSubtitleFilename
-				return sSource
-			elif myMedia == sSRTName2:
-				Log.Debug('Found a valid subtitle file named "%s"' %(sSubtitleFilename))
-				sSource = sMyDir + '/' + sSubtitleFilename
-				return sSource
-			else:
-				return 'null'
-		else:
-			return 'null'
-	except:
-		Log.Exception('An exception happened in function sIsValid in dir %s for media %s and file %s' %(sMyDir, sMediaFilename, sSubtitleFilename))
-		return 'null'
 
 ######################################## Make the backup, if enabled ###############################
 def MakeBackup(file):
