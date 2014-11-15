@@ -111,8 +111,17 @@ def get_subtitles(media_streams):
 	for media_stream in media_streams:
 		if media_stream.hasAttribute('type'):
 			if media_stream.getAttribute('type') == '3' and media_stream.hasAttribute('url') and media_stream.hasAttribute('language'):
-				sub_file = os.path.join(MEDIA_DIR, media_stream.getAttribute('url').replace('media://', ''))
-				sub_lang =  media_stream.getAttribute('language')
+				url = media_stream.getAttribute('url')
+
+				if 'media://' in url:
+					sub_file = os.path.join(MEDIA_DIR, url.replace('media://', ''))
+					# there is an lang attribute in media_stream, but it has different codes that we need
+					# so this is fix:
+					sub_lang = os.path.split(os.path.dirname(sub_file))[-1]
+				elif 'file://' in url:
+					sub_file = url.replace('file://', '')
+					sub_lang = sGetFileLang(sub_file)
+
 
 				subtitles.append((sub_file, sub_lang))
 
@@ -141,41 +150,40 @@ def handlePart(*args, **kwargs):
 			raise Exception("Could not find 'Video/Media/Part/Stream' in metadata {}".format(key))
 
 		for sub_filename, sub_lang in get_subtitles(m):
-			Log.Debug('Subtitle: {}'.format(sub_filename))
+			Log.Debug('Subtitle file: {}'.format(sub_filename))
 			Log.Debug('Subtitle lang: {}'.format(sub_lang))
 
 			if not bIsUTF_8(sub_filename):
-				pass
-				# TODO charedSup.CharedSupported you have 'cs' for czech language, but plex has it stored as 'cze', so you have to update your charedSup.CharedSupported with plex's language short names in api
-
-
-				# try:
-				# 	# Chared supported
-				# 	sModel = charedSup.CharedSupported[sMyLang]
-				# 	if sModel != 'und':
-				# 		Log.Debug('Chared is supported for this language')
-				# 		sMyEnc = FindEncChared(sTest, sModel)
-				# except:
-				# 	Log.Debug('Chared is not supported, reverting to Beautifull Soap')
-				# 	sMyEnc = FindEncBS(sTest, sMyLang)
-				# # Convert the darn thing
-				# if sMyEnc not in ('utf_8', 'utf-8'):
-				# 	# Make a backup
-				# 	try:
-				# 		MakeBackup(sTest)
-				# 	except:
-				# 		Log.Exception('Something went wrong creating a backup, file will not be converted!!! Check file permissions?')
-				# 	else:
-				# 		try:
-				# 			ConvertFile(sTest, sMyEnc)
-				# 		except:
-				# 			Log.Exception('Something went wrong converting!!! Check file permissions?')
-				# 			try:
-				# 				RevertBackup(sTest)
-				# 			except:
-				# 				Log.Exception("Can't even revert the backup?!? I give up...")
-				# else:
-				# 	Log.Debug('The subtitle file named : %s is already encoded in utf-8, so skipping' %(sTest))
+				if sub_lang == 'xx':
+					sub_lang = Locale.Language.Match(GetUsrEncPref())
+				
+				try:
+					# Chared supported
+					model = charedSup.CharedSupported[sub_lang]
+					if model != 'und':
+						Log.Debug('Chared is supported for this language')
+						enc = FindEncChared(sub_filename, model)
+				except:
+					Log.Debug('Chared is not supported, reverting to Beautifull Soap')
+					enc = FindEncBS(sub_filename, sub_lang)
+				# Convert the darn thing
+				if enc not in ('utf_8', 'utf-8'):
+					# Make a backup
+					try:
+						MakeBackup(sub_filename)
+					except:
+						Log.Exception('Something went wrong creating a backup, file will not be converted!!! Check file permissions?')
+					else:
+						try:
+							ConvertFile(sub_filename, enc)
+						except:
+							Log.Exception('Something went wrong converting!!! Check file permissions?')
+							try:
+								RevertBackup(sub_filename)
+							except:
+								Log.Exception("Can't even revert the backup?!? I give up...")
+				else:
+					Log.Debug('The subtitle file named : %s is already encoded in utf-8, so skipping' %(sub_filename))
 			else:
 				Log.Debug('The subtitle file named : %s is already encoded in utf-8, so skipping' %(sub_filename))
 
