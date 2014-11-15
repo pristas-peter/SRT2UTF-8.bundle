@@ -189,7 +189,7 @@ def handlePart(*args, **kwargs):
 
 	except:
 		Log.Error('Could not process {}'.format(filename))
-		Log.Error(traceback.format_exc())
+		Log.Debug(traceback.format_exc())
 				
 
 ########################################## Convert file to utf-8 ###################################
