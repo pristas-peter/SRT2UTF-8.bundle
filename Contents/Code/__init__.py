@@ -115,7 +115,7 @@ def get_subtitles(media_streams):
 
 				if 'media://' in url:
 					sub_file = os.path.join(MEDIA_DIR, url.replace('media://', ''))
-					# there is a lang attribute in media_stream, but it has different codes that we need
+					# there is a lang attribute in media_stream, but it has different codes from what we need
 					# so this is fix:
 					sub_lang = os.path.split(os.path.dirname(sub_file))[-1]
 				elif 'file://' in url:
